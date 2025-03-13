@@ -1,0 +1,3 @@
+#!/bin/sh
+[ -f target/debug/chibi ] || cargo build
+[ -f target/debug/chibi ] && ./target/debug/chibi

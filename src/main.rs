@@ -1,9 +1,21 @@
 use app::{ChibiApp, ChibiConfig, Message};
-use iced::{Task, Theme};
+use iced::{
+    Task, Theme, color,
+    theme::{Custom, Palette},
+};
 use std::sync::{Arc, Mutex};
 
 pub mod app;
 pub mod mic_capture;
+
+// Based on Gruvbox Dark
+pub const PALETTE: Palette = Palette {
+    background: color!(0x282828), // dark BG_0
+    text: color!(0xfbf1c7),       // dark FG0_29
+    primary: color!(0xd79921),    // dark YELLOW_1
+    success: color!(0x98971a),    // dark GREEN_2
+    danger: color!(0xcc241d),     // dark RED_1
+};
 
 fn main() -> iced::Result {
     // Create a channel to communicate with the detector thread
@@ -35,7 +47,7 @@ fn main() -> iced::Result {
     let stream_task = Task::stream(receiever).map(Message::MicActive);
 
     iced::application("chibi", ChibiApp::update, ChibiApp::view)
-        .theme(|_| Theme::GruvboxDark)
+        .theme(|_| Theme::Custom(Custom::new("CustomPalette".to_string(), PALETTE).into()))
         .window(iced::window::Settings {
             size: (400.0, 400.0).into(),
             resizable: false,

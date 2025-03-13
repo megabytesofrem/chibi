@@ -57,6 +57,7 @@ pub struct ChibiApp {
     // UI events
     mic_activated: bool,
     show_buttons: bool,
+    chroma_key: bool,
 
     // Currently displayed image
     curr_view: View,
@@ -111,6 +112,7 @@ impl Default for ChibiApp {
 
             mic_activated: false,
             show_buttons: true,
+            chroma_key: false,
             curr_view: View::Home,
             curr_image: None,
             receiver: None,
@@ -119,41 +121,6 @@ impl Default for ChibiApp {
 }
 
 impl ChibiApp {
-    pub fn update(&mut self, message: Message) {
-        match message {
-            Message::MicActive(active) => {
-                if active {
-                    self.curr_image = Some(self.config.images[1].clone());
-                } else {
-                    self.curr_image = Some(self.config.images[0].clone());
-                }
-
-                self.mic_activated = active;
-            }
-            Message::MicThresholdChanged(threshold) => {
-                self.config.microphone_threshold = threshold;
-            }
-            Message::SwitchView(view) => {
-                self.curr_view = view;
-            }
-            Message::AppEvent(event) => {
-                if let Event::Keyboard(iced::keyboard::Event::KeyPressed { key, .. }) = event {
-                    match key {
-                        Key::Named(Named::Escape) => {
-                            self.show_buttons = !self.show_buttons;
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-    }
-
-    pub fn subscription(&self) -> iced::Subscription<Message> {
-        // Subscribe to application events
-        event::listen().map(Message::AppEvent)
-    }
-
     fn view_home(&self) -> Element<Message> {
         let avatar_image = self
             .curr_image
@@ -187,11 +154,25 @@ impl ChibiApp {
             buttons
         ];
 
-        Container::new(layout)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .padding(5)
-            .into()
+        if self.chroma_key {
+            Container::new(layout)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .padding(5)
+                .style(|_| container::Style {
+                    background: Some(iced::Background::Color(iced::Color::from_rgb(
+                        1.0, 0.0, 1.0,
+                    ))),
+                    ..Default::default()
+                })
+                .into()
+        } else {
+            Container::new(layout)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .padding(5)
+                .into()
+        }
     }
 
     fn view_settings(&self) -> Element<Message> {
@@ -218,8 +199,14 @@ impl ChibiApp {
         ]
         .padding([10, 0]);
 
+        let hints = column![
+            text("Press 'ESC' to show/hide UI elements").size(12),
+            text("Press 'c' to toggle chroma key").size(12),
+        ];
+
         let layout = column![
             threshold,
+            hints,
             text(format!("Microphone activated: {}", self.mic_activated)).size(12),
             Space::new(Length::Fill, Length::Fill),
             aligned_button!("Back").on_press(Message::SwitchView(View::Home))
@@ -265,6 +252,44 @@ impl ChibiApp {
             View::Settings => self.view_settings(),
             View::About => self.view_about(),
         }
+    }
+
+    pub fn update(&mut self, message: Message) {
+        match message {
+            Message::MicActive(active) => {
+                if active {
+                    self.curr_image = Some(self.config.images[1].clone());
+                } else {
+                    self.curr_image = Some(self.config.images[0].clone());
+                }
+
+                self.mic_activated = active;
+            }
+            Message::MicThresholdChanged(threshold) => {
+                self.config.microphone_threshold = threshold;
+            }
+            Message::SwitchView(view) => {
+                self.curr_view = view;
+            }
+            Message::AppEvent(event) => {
+                if let Event::Keyboard(iced::keyboard::Event::KeyPressed { key, .. }) = event {
+                    match key {
+                        Key::Named(Named::Escape) => {
+                            self.show_buttons = !self.show_buttons;
+                        }
+                        Key::Character(c) if c == "c" => {
+                            self.chroma_key = !self.chroma_key;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn subscription(&self) -> iced::Subscription<Message> {
+        // Subscribe to application events
+        event::listen().map(Message::AppEvent)
     }
 }
 
