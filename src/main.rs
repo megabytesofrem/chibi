@@ -34,7 +34,7 @@ fn main() -> iced::Result {
     // Capture the stream of messages from the detector thread and turn them into messages
     let stream_task = Task::stream(receiever).map(Message::MicActive);
 
-    iced::application("anima", ChibiApp::update, ChibiApp::view)
+    iced::application("chibi", ChibiApp::update, ChibiApp::view)
         .theme(|_| Theme::GruvboxDark)
         .window(iced::window::Settings {
             size: (400.0, 400.0).into(),
