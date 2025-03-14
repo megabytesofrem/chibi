@@ -15,6 +15,16 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+    - name: Cache APT packages
+      uses: actions/cache@v4
+      with:
+        # apt stores it's cache here
+        path: /var/cache/apt/archives
+        key: ${{ runner.os }}-apt-${{ hashFiles('**/apt.txt') }}
+
+    - name: Install dependencies
+      run: sudo apt-get update && sudo apt-get install -y clang alsa-utils libasound2-dev
+
     - uses: actions/checkout@v4
     - name: Build
       run: cargo build --verbose
