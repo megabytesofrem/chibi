@@ -14,12 +14,14 @@ use cpal::traits::HostTrait;
 
 use iced::Alignment;
 use iced::Event;
+use iced::alignment;
 use iced::alignment::Horizontal;
 use iced::event;
 use iced::keyboard::Key;
 use iced::keyboard::key::Named;
 use iced::widget::Container;
 use iced::widget::Space;
+use iced::widget::button;
 use iced::widget::container;
 use iced::widget::image::Handle as ImageHandle;
 use iced::widget::slider;
@@ -30,7 +32,15 @@ use iced::{Element, Length};
 // Application configuration
 pub struct ChibiConfig {
     images: Arc<Vec<ImageHandle>>,
+
+    // TODO: Implement rnnoise as an optional feature, although it will increase
+    // latency potentially
+    /// Microphone detection threshold (RMS amplitude)
     pub microphone_threshold: f32,
+
+    /// Hysteresis factor for the microphone threshold. Acts as a deadband so the microphone
+    /// stays active until the signal drops below a lower off threshold.
+    pub hysteris_factor: f32,
 }
 
 #[derive(Debug, Clone)]
@@ -44,6 +54,7 @@ pub enum View {
 pub enum Message {
     MicActive(bool),
     MicThresholdChanged(f32),
+    MicHysterisChanged(f32),
     SwitchView(View),
     AppEvent(iced::Event),
 }
@@ -70,29 +81,47 @@ impl ChibiConfig {
         Self {
             microphone_threshold,
             images: Arc::new(vec![]),
+            ..Default::default()
         }
     }
 }
 
 // App implementation
 
-macro_rules! aligned_button {
-    ($text:expr) => {
-        iced::widget::button::Button::new(
-            iced::widget::text::Text::new($text)
-                .align_x(iced::alignment::Horizontal::Center)
-                .width(Length::Fill),
-        )
-        .width(Length::Fill)
-        .padding(5)
-    };
+fn aligned_button<'a>(text: &'a str) -> button::Button<'a, Message> {
+    button::Button::new(
+        text::Text::new(text)
+            .align_x(alignment::Horizontal::Center)
+            .width(Length::Fill),
+    )
+    .width(Length::Fill)
+    .padding(5)
+}
+
+fn detailed_slider<'a>(
+    label: String,
+    detail: String,
+    range: std::ops::RangeInclusive<f32>,
+    value: f32,
+    message: impl Fn(f32) -> Message + 'a,
+) -> Container<'a, Message> {
+    container(column![
+        text(label).size(14),
+        text(detail)
+            .size(12)
+            .width(Length::Fill)
+            .color([0.8, 0.8, 0.8])
+            .size(12),
+        container(slider(range, value, move |v| message(v)).step(0.01),),
+    ])
 }
 
 impl Default for ChibiConfig {
     fn default() -> Self {
         Self {
             images: Arc::new(vec![]),
-            microphone_threshold: 0.15,
+            microphone_threshold: 0.12,
+            hysteris_factor: 0.30,
         }
     }
 }
@@ -121,7 +150,7 @@ impl Default for ChibiApp {
 }
 
 impl ChibiApp {
-    fn view_home(&self) -> Element<Message> {
+    fn view_home<'a>(&self) -> Element<Message> {
         let avatar_image = self
             .curr_image
             .clone()
@@ -129,8 +158,8 @@ impl ChibiApp {
 
         let buttons = if self.show_buttons {
             column![
-                aligned_button!("Settings").on_press(Message::SwitchView(View::Settings)),
-                aligned_button!("About").on_press(Message::SwitchView(View::About)),
+                aligned_button("Settings").on_press(Message::SwitchView(View::Settings)),
+                aligned_button("About").on_press(Message::SwitchView(View::About)),
             ]
             .spacing(10)
         } else {
@@ -175,29 +204,33 @@ impl ChibiApp {
         }
     }
 
-    fn view_settings(&self) -> Element<Message> {
-        let threshold = column![
-            text(format!(
-                "Microphone threshold (default 0.15): {0:.2}",
+    fn view_settings<'a>(&self) -> Element<Message> {
+        let threshold = detailed_slider(
+            format!(
+                "Microphone threshold: {:.2}",
                 self.config.microphone_threshold
-            ))
-            .size(14),
-            text(
-                "Adjust the microphone threshold to activate the mic. \
-                Increase this if it picks up background noise."
             )
-            .color([0.8, 0.8, 0.8])
-            .size(12),
-            container(
-                slider(
-                    0.0..=1.0,
-                    self.config.microphone_threshold,
-                    Message::MicThresholdChanged,
-                )
-                .step(0.01),
-            ),
-        ]
-        .padding([10, 0]);
+            .into(),
+            "Adjust the microphone detection threshold. \
+            Too low a value may cause the microphone to activate too easily."
+                .trim()
+                .into(),
+            0.0..=1.0,
+            self.config.microphone_threshold,
+            |value| Message::MicThresholdChanged(value),
+        );
+
+        let hysteris = detailed_slider(
+            format!("Hysteris factor: {:.2}", self.config.hysteris_factor).into(),
+            "Adjust the hysteris factor. \
+            Acts as a deadband so the microphone stays active until the signal drops \
+            below a lower \"off\" threshold."
+                .trim()
+                .into(),
+            0.0..=1.0,
+            self.config.hysteris_factor,
+            |value| Message::MicHysterisChanged(value),
+        );
 
         let hints = column![
             text("Press 'ESC' to show/hide UI elements").size(12),
@@ -206,10 +239,11 @@ impl ChibiApp {
 
         let layout = column![
             threshold,
+            hysteris,
             hints,
             text(format!("Microphone activated: {}", self.mic_activated)).size(12),
             Space::new(Length::Fill, Length::Fill),
-            aligned_button!("Back").on_press(Message::SwitchView(View::Home))
+            aligned_button("Back").on_press(Message::SwitchView(View::Home))
         ]
         .spacing(10);
 
@@ -220,7 +254,7 @@ impl ChibiApp {
             .into()
     }
 
-    fn view_about(&self) -> Element<Message> {
+    fn view_about<'a>(&self) -> Element<Message> {
         let labels = column![
             text("Chibi").size(24),
             text("Indie PNG-tuber application made in Rust supporting all major platforms")
@@ -235,7 +269,7 @@ impl ChibiApp {
         let layout = column![
             labels,
             Space::new(Length::Fill, Length::Fill),
-            aligned_button!("Back").on_press(Message::SwitchView(View::Home))
+            aligned_button("Back").on_press(Message::SwitchView(View::Home))
         ]
         .spacing(10);
 
@@ -267,6 +301,9 @@ impl ChibiApp {
             }
             Message::MicThresholdChanged(threshold) => {
                 self.config.microphone_threshold = threshold;
+            }
+            Message::MicHysterisChanged(hysteris) => {
+                self.config.hysteris_factor = hysteris;
             }
             Message::SwitchView(view) => {
                 self.curr_view = view;

@@ -25,13 +25,8 @@ fn main() -> iced::Result {
     // Load images from assets in the current directory
     let current_dir = std::env::current_dir().expect("Failed to get current directory");
     let assets_dir = current_dir.join("assets");
-
-    println!("Loading images from {:?}", assets_dir);
-
-    // Load images from the assets directory
     app.load_images(&assets_dir);
 
-    // Clone the input device and input config for the detector thread
     let input_device = Arc::new(Mutex::new(app.input_device.clone()));
     let input_config = Arc::new(Mutex::new(app.input_config.clone()));
 
