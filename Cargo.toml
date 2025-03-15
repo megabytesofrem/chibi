@@ -10,3 +10,6 @@ cpal = "0.15.3"
 iced = { version = "0.13.1", features = ["image"] }
 iced_futures = "0.13.2"
 image = "0.25.5"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+alsa = "0.9.1"

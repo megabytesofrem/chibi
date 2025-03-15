@@ -10,8 +10,6 @@ Indie PNG-tuber application made in Rust supporting all major platforms</p>
   <img src="https://img.shields.io/badge/Made with Iced-blue?e&logo=Iced&logoColor=white">
 
   <img src="https://img.shields.io/github/license/megabytesofrem/chibi" alt="GitHub License" >
-
-  <!-- <img alt="GitHub Downloads (all assets, all releases)" src="https://img.shields.io/github/downloads/megabytesofrem/chibi/total"> -->
 </p>
 
 

@@ -4,44 +4,28 @@
 //
 
 use std::path::Path;
-use std::sync::Arc;
 
 use async_channel::Receiver;
-use cpal::Device;
 use cpal::SupportedStreamConfig;
 use cpal::traits::DeviceTrait;
-use cpal::traits::HostTrait;
 
 use iced::Alignment;
 use iced::Event;
 use iced::alignment;
-use iced::alignment::Horizontal;
 use iced::event;
 use iced::keyboard::Key;
 use iced::keyboard::key::Named;
 use iced::widget::Container;
 use iced::widget::Space;
-use iced::widget::button;
-use iced::widget::container;
-use iced::widget::image::Handle as ImageHandle;
-use iced::widget::slider;
-use iced::widget::{column, image, text};
+use iced::widget::image::Handle;
+use iced::widget::{button, column, combo_box, container, image, row, slider, text};
 use iced::{Element, Length};
 
-#[derive(Clone)]
-// Application configuration
-pub struct ChibiConfig {
-    images: Arc<Vec<ImageHandle>>,
+use crate::capture;
+use crate::capture::InputDevice;
+use crate::config::ChibiConfig;
 
-    // TODO: Implement rnnoise as an optional feature, although it will increase
-    // latency potentially
-    /// Microphone detection threshold (RMS amplitude)
-    pub microphone_threshold: f32,
-
-    /// Hysteresis factor for the microphone threshold. Acts as a deadband so the microphone
-    /// stays active until the signal drops below a lower off threshold.
-    pub hysteris_factor: f32,
-}
+const APP_VERSION: f32 = 1.1;
 
 #[derive(Debug, Clone)]
 pub enum View {
@@ -53,8 +37,9 @@ pub enum View {
 #[derive(Debug, Clone)]
 pub enum Message {
     MicActive(bool),
-    MicThresholdChanged(f32),
-    MicHysterisChanged(f32),
+    ThresholdChanged(f32),
+    HysteresisChanged(f32),
+    InputChanged(InputDevice),
     SwitchView(View),
     AppEvent(iced::Event),
 }
@@ -62,28 +47,22 @@ pub enum Message {
 // Internal application state
 pub struct ChibiApp {
     pub config: ChibiConfig,
-    pub input_device: Device,
-    pub input_config: SupportedStreamConfig,
+
+    // Input device state
+    pub available_input_devices: combo_box::State<InputDevice>,
+    pub selected_input_device: Option<InputDevice>,
+    pub selected_input_config: SupportedStreamConfig,
 
     // UI events
     mic_activated: bool,
     show_buttons: bool,
+    show_modal: bool,
     chroma_key: bool,
 
     // Currently displayed image
     curr_view: View,
-    curr_image: Option<ImageHandle>,
-    receiver: Option<Receiver<bool>>,
-}
-
-impl ChibiConfig {
-    pub fn new(microphone_threshold: f32) -> Self {
-        Self {
-            microphone_threshold,
-            images: Arc::new(vec![]),
-            ..Default::default()
-        }
-    }
+    curr_image: Option<Handle>,
+    pub receiver: Option<Receiver<bool>>,
 }
 
 // App implementation
@@ -98,49 +77,40 @@ fn aligned_button<'a>(text: &'a str) -> button::Button<'a, Message> {
     .padding(5)
 }
 
-fn detailed_slider<'a>(
+fn detailed_slider<'a, Message>(
     label: String,
     detail: String,
     range: std::ops::RangeInclusive<f32>,
     value: f32,
     message: impl Fn(f32) -> Message + 'a,
-) -> Container<'a, Message> {
+) -> Container<'a, Message>
+where
+    Message: Clone + 'a,
+{
     container(column![
         text(label).size(14),
         text(detail)
             .size(12)
             .width(Length::Fill)
-            .color([0.8, 0.8, 0.8])
-            .size(12),
+            .color([0.8, 0.8, 0.8]),
         container(slider(range, value, move |v| message(v)).step(0.01),),
     ])
-}
-
-impl Default for ChibiConfig {
-    fn default() -> Self {
-        Self {
-            images: Arc::new(vec![]),
-            microphone_threshold: 0.12,
-            hysteris_factor: 0.30,
-        }
-    }
 }
 
 impl Default for ChibiApp {
     fn default() -> Self {
         Self {
             config: ChibiConfig::default(),
-            input_device: cpal::default_host()
-                .default_input_device()
-                .expect("No input device available"),
-            input_config: cpal::default_host()
-                .default_input_device()
-                .expect("No input device available")
+            available_input_devices: combo_box::State::new(capture::get_input_devices()),
+            selected_input_device: capture::get_default_device(),
+            selected_input_config: capture::get_default_device()
+                .unwrap()
+                .raw_device
                 .default_input_config()
-                .expect("No default input config"),
-
+                .unwrap(),
             mic_activated: false,
             show_buttons: true,
+            show_modal: false,
             chroma_key: false,
             curr_view: View::Home,
             curr_image: None,
@@ -154,16 +124,16 @@ impl ChibiApp {
         let avatar_image = self
             .curr_image
             .clone()
-            .unwrap_or(self.config.images[0].clone());
+            .unwrap_or(self.config.get_image(0).unwrap().clone());
 
         let buttons = if self.show_buttons {
-            column![
+            row![
                 aligned_button("Settings").on_press(Message::SwitchView(View::Settings)),
                 aligned_button("About").on_press(Message::SwitchView(View::About)),
             ]
-            .spacing(10)
+            .spacing(5)
         } else {
-            column![Space::new(Length::Fill, Length::Fill)]
+            row![Space::new(Length::Fill, Length::Fill)]
         };
 
         let layout = column![
@@ -184,28 +154,30 @@ impl ChibiApp {
         ];
 
         if self.chroma_key {
-            Container::new(layout)
+            container(layout)
                 .width(Length::Fill)
                 .height(Length::Fill)
-                .padding(5)
                 .style(|_| container::Style {
                     background: Some(iced::Background::Color(iced::Color::from_rgb(
                         1.0, 0.0, 1.0,
                     ))),
                     ..Default::default()
                 })
+                .padding(15)
                 .into()
         } else {
-            Container::new(layout)
+            container(layout)
                 .width(Length::Fill)
                 .height(Length::Fill)
-                .padding(5)
+                .padding(15)
                 .into()
         }
     }
 
     fn view_settings<'a>(&self) -> Element<Message> {
-        let threshold = detailed_slider(
+        // FIXME: Combobox shows up initially as "default" when nothing is selected
+
+        let threshold_slider = detailed_slider(
             format!(
                 "Microphone threshold: {:.2}",
                 self.config.microphone_threshold
@@ -217,52 +189,71 @@ impl ChibiApp {
                 .into(),
             0.0..=1.0,
             self.config.microphone_threshold,
-            |value| Message::MicThresholdChanged(value),
+            |value| Message::ThresholdChanged(value),
         );
 
-        let hysteris = detailed_slider(
-            format!("Hysteris factor: {:.2}", self.config.hysteris_factor).into(),
-            "Adjust the hysteris factor. \
+        let hysteresis_slider = detailed_slider(
+            format!("Hysteresis factor: {:.2}", self.config.hysteresis_factor).into(),
+            "Adjust the Hysteresis factor. \
             Acts as a deadband so the microphone stays active until the signal drops \
             below a lower \"off\" threshold."
                 .trim()
                 .into(),
             0.0..=1.0,
-            self.config.hysteris_factor,
-            |value| Message::MicHysterisChanged(value),
+            self.config.hysteresis_factor,
+            |value| Message::HysteresisChanged(value),
         );
 
-        let hints = column![
-            text("Press 'ESC' to show/hide UI elements").size(12),
-            text("Press 'c' to toggle chroma key").size(12),
+        let combo_input = column![
+            text("Select an input device:").size(14),
+            combo_box(
+                &self.available_input_devices,
+                "Input device",
+                self.selected_input_device.as_ref(),
+                Message::InputChanged,
+            ),
+            text("After selecting an input device, you will need to restart the application.")
+                .color([0.8, 0.8, 0.8])
+                .size(12)
+        ];
+
+        let ui_hints = column![
+            text("Press 'ESC' to show/hide UI elements")
+                .color([0.8, 0.8, 0.8])
+                .size(12),
+            text("Press 'c' to toggle chroma key")
+                .color([0.8, 0.8, 0.8])
+                .size(12),
         ];
 
         let layout = column![
-            threshold,
-            hysteris,
-            hints,
+            threshold_slider,
+            hysteresis_slider,
+            combo_input,
+            Space::new(Length::Fill, Length::Fill),
+            ui_hints,
             text(format!("Microphone activated: {}", self.mic_activated)).size(12),
             Space::new(Length::Fill, Length::Fill),
             aligned_button("Back").on_press(Message::SwitchView(View::Home))
         ]
-        .spacing(10);
+        .spacing(10)
+        .padding(15);
 
-        Container::new(layout)
+        container(layout)
             .width(Length::Fill)
             .height(Length::Fill)
-            .padding(10)
             .into()
     }
 
     fn view_about<'a>(&self) -> Element<Message> {
         let labels = column![
-            text("Chibi").size(24),
+            text(format!("Chibi {}", APP_VERSION)).size(24),
             text("Indie PNG-tuber application made in Rust supporting all major platforms")
                 .size(12),
             text("The example assets used in this application are created by @chereverie").size(12),
             text("Licensed under the MPL-2.0 license").size(12),
         ]
-        .align_x(Horizontal::Center)
+        .align_x(alignment::Horizontal::Center)
         .width(Length::Fill)
         .spacing(10);
 
@@ -273,10 +264,10 @@ impl ChibiApp {
         ]
         .spacing(10);
 
-        Container::new(layout)
+        container(layout)
             .width(Length::Fill)
             .height(Length::Fill)
-            .padding(10)
+            .padding(15)
             .into()
     }
 
@@ -292,21 +283,25 @@ impl ChibiApp {
         match message {
             Message::MicActive(active) => {
                 if active {
-                    self.curr_image = Some(self.config.images[1].clone());
+                    self.curr_image = Some(self.config.get_image(1).unwrap().clone());
                 } else {
-                    self.curr_image = Some(self.config.images[0].clone());
+                    self.curr_image = Some(self.config.get_image(0).unwrap().clone());
                 }
 
                 self.mic_activated = active;
             }
-            Message::MicThresholdChanged(threshold) => {
+            Message::ThresholdChanged(threshold) => {
                 self.config.microphone_threshold = threshold;
             }
-            Message::MicHysterisChanged(hysteris) => {
-                self.config.hysteris_factor = hysteris;
+            Message::HysteresisChanged(hysteris) => {
+                self.config.hysteresis_factor = hysteris;
             }
             Message::SwitchView(view) => {
                 self.curr_view = view;
+            }
+            Message::InputChanged(device) => {
+                self.selected_input_device = Some(device.clone());
+                self.show_modal = true;
             }
             Message::AppEvent(event) => {
                 if let Event::Keyboard(iced::keyboard::Event::KeyPressed { key, .. }) = event {
@@ -346,10 +341,10 @@ impl ChibiApp {
                 let entry = entry.expect("Failed to read entry");
                 let path = entry.path();
 
-                ImageHandle::from_path(path)
+                Handle::from_path(path)
             })
             .collect();
 
-        self.config.images = Arc::new(images);
+        self.config.set_images(images);
     }
 }

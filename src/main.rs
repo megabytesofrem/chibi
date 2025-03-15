@@ -1,21 +1,17 @@
-use app::{ChibiApp, ChibiConfig, Message};
-use iced::{
-    Task, Theme, color,
-    theme::{Custom, Palette},
-};
+//
+// chibi: Indie PNG-tuber application made in Rust supporting all major platforms
+// Licensed under the MPL-2.0 license
+//
+
+use app::{ChibiApp, Message};
+use config::ChibiConfig;
+
+use iced::{Task, Theme};
 use std::sync::{Arc, Mutex};
 
 pub mod app;
-pub mod mic_capture;
-
-// Based on Gruvbox Dark
-pub const PALETTE: Palette = Palette {
-    background: color!(0x282828), // dark BG_0
-    text: color!(0xfbf1c7),       // dark FG0_29
-    primary: color!(0xd79921),    // dark YELLOW_1
-    success: color!(0x98971a),    // dark GREEN_2
-    danger: color!(0xcc241d),     // dark RED_1
-};
+pub mod capture;
+pub mod config;
 
 fn main() -> iced::Result {
     // Create a channel to communicate with the detector thread
@@ -27,13 +23,13 @@ fn main() -> iced::Result {
     let assets_dir = current_dir.join("assets");
     app.load_images(&assets_dir);
 
-    let input_device = Arc::new(Mutex::new(app.input_device.clone()));
-    let input_config = Arc::new(Mutex::new(app.input_config.clone()));
+    let input_device = Arc::new(Mutex::new(app.selected_input_device.clone().unwrap()));
+    let input_config = Arc::new(Mutex::new(app.selected_input_config.clone()));
 
     // Spawn the detector thread
-    mic_capture::spawn_detection_thread(
+    capture::spawn_capture_thread(
         Arc::new(Mutex::new(app.config.clone())),
-        input_device,
+        Arc::new(Mutex::new(input_device.lock().unwrap().raw_device.clone())),
         input_config,
         sender,
     );
@@ -42,7 +38,7 @@ fn main() -> iced::Result {
     let stream_task = Task::stream(receiever).map(Message::MicActive);
 
     iced::application("chibi", ChibiApp::update, ChibiApp::view)
-        .theme(|_| Theme::Custom(Custom::new("CustomPalette".to_string(), PALETTE).into()))
+        .theme(move |_| Theme::TokyoNight)
         .window(iced::window::Settings {
             size: (400.0, 400.0).into(),
             resizable: false,
