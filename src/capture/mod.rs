@@ -1,16 +1,17 @@
-use std::{
-    collections::HashMap,
-    fmt,
-    sync::{Arc, Mutex},
-};
+mod alsa_util;
 
+use std::fmt;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use crate::config::ChibiConfig;
+use crate::lock_and_unlock;
 use async_channel::Sender;
 use cpal::{
     Device, SupportedStreamConfig,
     traits::{DeviceTrait, HostTrait, StreamTrait},
 };
-
-use crate::config::ChibiConfig;
+use rand::Rng;
 
 /// Abstraction over `cpal::Device` which includes a friendly name
 #[derive(Clone)]
@@ -58,12 +59,14 @@ pub fn get_default_device() -> Option<InputDevice> {
     // Query it with ALSA hints on Linux
     #[cfg(target_os = "linux")]
     {
+        use crate::capture::alsa_util;
+
         let dev_name = default_device
             .clone()
             .name()
             .expect("Failed to get device name");
 
-        input_device = Some(get_alsa_hint_for(&dev_name).map_or_else(
+        input_device = Some(alsa_util::get_alsa_hint_for(&dev_name).map_or_else(
             || InputDevice::new(default_device.clone(), dev_name.clone()),
             |_| InputDevice::new(default_device.clone(), dev_name.clone()),
         ));
@@ -77,39 +80,6 @@ pub fn get_default_device() -> Option<InputDevice> {
     }
 
     input_device
-}
-
-#[cfg(target_os = "linux")]
-fn get_alsa_hint_for(name: &str) -> Option<String> {
-    let hints = get_alsa_hints();
-    hints.get(name).cloned()
-}
-
-#[cfg(target_os = "linux")]
-fn get_alsa_hints() -> HashMap<String, String> {
-    use alsa::Direction;
-    use alsa::device_name::HintIter;
-    use std::ffi::CString;
-
-    let mut hints = HashMap::new();
-
-    let iface = CString::new("pcm").expect("CString::new failed");
-    let hint_iter = HintIter::new(None, &iface).expect("Failed to get ALSA hints");
-
-    for hint in hint_iter {
-        let name = hint.name.expect("Failed to get hint name");
-        let desc = hint.desc.expect("Failed to get hint description");
-
-        if let Some(direction) = hint.direction {
-            if direction != Direction::Capture {
-                continue;
-            }
-        }
-
-        hints.insert(name.to_string(), desc.to_string());
-    }
-
-    hints
 }
 
 /// Return a list of input devices tagged with their friendly names
@@ -126,9 +96,14 @@ pub fn get_input_devices() -> Vec<InputDevice> {
         .collect();
 
     // On Linux query ALSA hints for the device description and use that
+    // This spams some ALSA warnings but it's (probably) fine:
+    // ALSA lib pcm_dsnoop.c:567:(snd_pcm_dsnoop_open) unable to open slave
+    // ALSA lib pcm_dmix.c:1000:(snd_pcm_dmix_open) unable to open slave
     #[cfg(target_os = "linux")]
     {
-        let hints = get_alsa_hints();
+        use crate::capture::alsa_util;
+
+        let hints = alsa_util::get_alsa_hints();
         input_devices = devices
             .into_iter()
             .map(|dev| {
@@ -162,7 +137,7 @@ pub fn get_input_devices() -> Vec<InputDevice> {
 }
 
 fn capture_input(
-    config: ChibiConfig,
+    config: Arc<Mutex<ChibiConfig>>,
     input_device: Arc<Mutex<Device>>,
     input_config: Arc<Mutex<SupportedStreamConfig>>,
     buffer: Arc<Mutex<Vec<i16>>>,
@@ -174,17 +149,20 @@ fn capture_input(
     // TODO: DSP processing so the signal is as clean as possible
 
     let err_fn = |err| eprintln!("Error in audio stream: {}", err);
-
     let mut mic_active = false;
 
     input_device.lock().unwrap().build_input_stream(
         &input_config.lock().unwrap().clone().into(),
         move |data: &[f32], _| {
+            let config = lock_and_unlock!(config);
+
+            let mut rng = rand::rng();
+
             // Compute RMS amplitude
             let rms = rms_amplitude(data);
 
             let rms_threshold_on = config.microphone_threshold;
-            let rms_threshold_off = rms_threshold_on * config.hysteresis_factor; // Hysteresis, aka "deadband"
+            let rms_threshold_off = rms_threshold_on * config.deadband_factor; // Hysteresis, aka "deadband"
 
             if mic_active {
                 if rms < rms_threshold_off {
@@ -196,7 +174,20 @@ fn capture_input(
                 }
             }
 
-            sender.send_blocking(mic_active).unwrap();
+            if mic_active {
+                if config.flicker_input {
+                    // Pick a random duration for the flicker to make it look more natural
+                    let random_duration = Duration::from_millis(rng.random_range(30..=100));
+
+                    sender.try_send(true).ok();
+                    std::thread::sleep(random_duration);
+                    sender.try_send(false).ok();
+                } else {
+                    sender.try_send(true).ok();
+                }
+            } else {
+                sender.try_send(false).ok();
+            }
 
             // Only process audio if the microphone is active
             if !mic_active {
@@ -226,7 +217,6 @@ pub fn spawn_capture_thread(
     input_config: Arc<Mutex<SupportedStreamConfig>>,
     sender: Sender<bool>,
 ) {
-    let config = config.lock().unwrap().clone();
     let buffer = Arc::new(Mutex::new(Vec::<i16>::new()));
 
     std::thread::spawn(move || {

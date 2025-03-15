@@ -4,6 +4,8 @@
 //
 
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::Mutex;
 
 use async_channel::Receiver;
 use cpal::SupportedStreamConfig;
@@ -18,12 +20,14 @@ use iced::keyboard::key::Named;
 use iced::widget::Container;
 use iced::widget::Space;
 use iced::widget::image::Handle;
+use iced::widget::toggler;
 use iced::widget::{button, column, combo_box, container, image, row, slider, text};
 use iced::{Element, Length};
 
 use crate::capture;
 use crate::capture::InputDevice;
 use crate::config::ChibiConfig;
+use crate::lock_and_unlock;
 
 const APP_VERSION: f32 = 1.1;
 
@@ -38,15 +42,19 @@ pub enum View {
 pub enum Message {
     MicActive(bool),
     ThresholdChanged(f32),
-    HysteresisChanged(f32),
+    DeadbandChanged(f32),
     InputChanged(InputDevice),
+    FlickerChanged(bool),
     SwitchView(View),
     AppEvent(iced::Event),
 }
 
 // Internal application state
 pub struct ChibiApp {
-    pub config: ChibiConfig,
+    // Application configuration
+    pub config: Arc<Mutex<ChibiConfig>>,
+
+    images: Arc<Vec<Handle>>,
 
     // Input device state
     pub available_input_devices: combo_box::State<InputDevice>,
@@ -100,7 +108,8 @@ where
 impl Default for ChibiApp {
     fn default() -> Self {
         Self {
-            config: ChibiConfig::default(),
+            config: Arc::new(Mutex::new(ChibiConfig::default())),
+            images: Arc::new(vec![]),
             available_input_devices: combo_box::State::new(capture::get_input_devices()),
             selected_input_device: capture::get_default_device(),
             selected_input_config: capture::get_default_device()
@@ -124,7 +133,7 @@ impl ChibiApp {
         let avatar_image = self
             .curr_image
             .clone()
-            .unwrap_or(self.config.get_image(0).unwrap().clone());
+            .unwrap_or(self.get_image(0).unwrap().clone());
 
         let buttons = if self.show_buttons {
             row![
@@ -175,34 +184,39 @@ impl ChibiApp {
     }
 
     fn view_settings<'a>(&self) -> Element<Message> {
+        let config = crate::lock_and_unlock!(self.config);
+
         // FIXME: Combobox shows up initially as "default" when nothing is selected
-
         let threshold_slider = detailed_slider(
-            format!(
-                "Microphone threshold: {:.2}",
-                self.config.microphone_threshold
-            )
-            .into(),
+            format!("Microphone threshold: {:.2}", config.microphone_threshold).into(),
             "Adjust the microphone detection threshold. \
-            Too low a value may cause the microphone to activate too easily."
+            Too low of a value may cause the microphone to activate too easily."
                 .trim()
                 .into(),
             0.0..=1.0,
-            self.config.microphone_threshold,
-            |value| Message::ThresholdChanged(value),
+            config.microphone_threshold,
+            |value| Message::ThresholdChanged((value * 100.0).round() / 100.0),
         );
 
-        let hysteresis_slider = detailed_slider(
-            format!("Hysteresis factor: {:.2}", self.config.hysteresis_factor).into(),
-            "Adjust the Hysteresis factor. \
-            Acts as a deadband so the microphone stays active until the signal drops \
-            below a lower \"off\" threshold."
+        let deadband_slider = detailed_slider(
+            format!("Deadband factor: {:.2}", config.deadband_factor).into(),
+            "Adjust the deadband factor. \
+            Deadband that determines when the microphone stays active prior to a signal drop off"
                 .trim()
                 .into(),
             0.0..=1.0,
-            self.config.hysteresis_factor,
-            |value| Message::HysteresisChanged(value),
+            config.deadband_factor,
+            |value| Message::DeadbandChanged((value * 100.0).round() / 100.0),
         );
+
+        let flicker_toggler = column![
+            toggler(config.flicker_input)
+                .label("Flicker between on/off at random intervals")
+                .on_toggle(Message::FlickerChanged),
+            text("Can make the microphone appear more visually appealing, but less accurate.")
+                .color([0.8, 0.8, 0.8])
+                .size(12),
+        ];
 
         let combo_input = column![
             text("Select an input device:").size(14),
@@ -228,7 +242,8 @@ impl ChibiApp {
 
         let layout = column![
             threshold_slider,
-            hysteresis_slider,
+            deadband_slider,
+            flicker_toggler,
             combo_input,
             Space::new(Length::Fill, Length::Fill),
             ui_hints,
@@ -280,21 +295,25 @@ impl ChibiApp {
     }
 
     pub fn update(&mut self, message: Message) {
+        let mut config = lock_and_unlock!(self.config);
+
         match message {
             Message::MicActive(active) => {
                 if active {
-                    self.curr_image = Some(self.config.get_image(1).unwrap().clone());
+                    self.curr_image = Some(self.get_image(1).unwrap().clone());
                 } else {
-                    self.curr_image = Some(self.config.get_image(0).unwrap().clone());
+                    self.curr_image = Some(self.get_image(0).unwrap().clone());
                 }
 
                 self.mic_activated = active;
             }
             Message::ThresholdChanged(threshold) => {
-                self.config.microphone_threshold = threshold;
+                config.microphone_threshold = threshold;
+                config.save();
             }
-            Message::HysteresisChanged(hysteris) => {
-                self.config.hysteresis_factor = hysteris;
+            Message::DeadbandChanged(deadband) => {
+                config.deadband_factor = deadband;
+                config.save();
             }
             Message::SwitchView(view) => {
                 self.curr_view = view;
@@ -302,6 +321,10 @@ impl ChibiApp {
             Message::InputChanged(device) => {
                 self.selected_input_device = Some(device.clone());
                 self.show_modal = true;
+            }
+            Message::FlickerChanged(flicker) => {
+                config.flicker_input = flicker;
+                config.save();
             }
             Message::AppEvent(event) => {
                 if let Event::Keyboard(iced::keyboard::Event::KeyPressed { key, .. }) = event {
@@ -328,7 +351,7 @@ impl ChibiApp {
 impl ChibiApp {
     pub fn new(config: ChibiConfig, receiver: Option<Receiver<bool>>) -> Self {
         Self {
-            config,
+            config: Arc::new(Mutex::new(config)),
             receiver,
             ..Default::default()
         }
@@ -345,6 +368,14 @@ impl ChibiApp {
             })
             .collect();
 
-        self.config.set_images(images);
+        self.set_images(images);
+    }
+
+    pub fn set_images(&mut self, images: Vec<Handle>) {
+        self.images = Arc::new(images);
+    }
+
+    pub fn get_image(&self, index: usize) -> Option<&Handle> {
+        self.images.get(index)
     }
 }

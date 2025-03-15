@@ -31,4 +31,3 @@ The example assets used in this application are created by @chereverie
 - Twitter: @mewdokas
 - Tumblr: chereverie
 - Instagram: chereverie.art
-
