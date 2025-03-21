@@ -1,10 +1,8 @@
 <p align="center">
   <h1 align="center">chibi</h1>
   <p align="center">
-Indie PNG-tuber application made in Rust supporting all major platforms</p>
-</p>
-
-<p align="center">
+Indie <a href="https://en.wikipedia.org/wiki/PNGTuber#:~:text=PNGTubers">PNG-tuber</a> application made in Rust supporting all major platforms.
+  </p><p align="center">
   <img src="https://img.shields.io/badge/Rust-%23000000.svg?e&logo=rust&logoColor=white)">
 
   <img src="https://img.shields.io/badge/Made with Iced-blue?e&logo=Iced&logoColor=white">
